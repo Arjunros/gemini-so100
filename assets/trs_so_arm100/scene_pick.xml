@@ -1,0 +1,39 @@
+<mujoco model="so_arm100_pick">
+  
+  <include file="so_arm100.xml"/>
+
+  <statistic center="0.15 0 0.1" extent="0.5"/>
+
+  <visual>
+    <headlight diffuse="0.7 0.7 0.7" ambient="0.4 0.4 0.4" specular="0.1 0.1 0.1"/>
+    <global azimuth="150" elevation="-25" offwidth="640" offheight="480"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.4 0.6 0.8" rgb2="0.9 0.9 0.95" width="256" height="256"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.85 0.85 0.85" rgb2="0.75 0.75 0.78"
+             width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.05"/>
+    <material name="cube_red" rgba="0.85 0.15 0.15 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0.3 0 1.2" dir="0 0 -1" directional="false"/>
+    <geom name="floor" type="plane" size="1.5 1.5 0.05" material="grid"/>
+
+    <!-- Camera Gemini sees: front-top view of the workspace -->
+    <camera name="vla_cam" pos="0.55 0.0 0.45" xyaxes="0 -1 0 -0.6 0 0.8" fovy="55"/>
+    <!-- Overhead debug camera -->
+    <camera name="top_cam" pos="0.15 0 0.8" xyaxes="0 -1 0 1 0 0" fovy="50"/>
+
+    <!-- Graspable cube (2.5 cm, sized for the SO-100 jaw) -->
+    <body name="cube" pos="0.22 0.0 0.0125">
+      <freejoint name="cube_free"/>
+      <geom name="cube_geom" type="box" size="0.0125 0.0125 0.0125" material="cube_red"
+            mass="0.03" friction="1.5 0.05 0.001" condim="4"/>
+    </body>
+
+    <!-- Goal marker (visual only, moved programmatically) -->
+    <site name="goal" pos="0.15 0.15 0.0125" size="0.015" rgba="0.1 0.8 0.2 0.35" type="sphere"/>
+  </worldbody>
+</mujoco>

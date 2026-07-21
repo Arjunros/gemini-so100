@@ -1,0 +1,11 @@
+mujoco>=3.1
+gymnasium>=0.29
+numpy
+stable-baselines3>=2.3
+tensorboard
+imageio
+imageio-ffmpeg
+pillow
+google-genai
+tqdm
+rich
