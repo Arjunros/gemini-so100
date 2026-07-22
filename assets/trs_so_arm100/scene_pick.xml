@@ -21,8 +21,16 @@
     <light pos="0.3 0 1.2" dir="0 0 -1" directional="false"/>
     <geom name="floor" type="plane" size="1.5 1.5 0.05" material="grid"/>
 
-    <!-- Camera Gemini sees: front-top view of the workspace -->
-    <camera name="vla_cam" pos="0.55 0.0 0.45" xyaxes="0 -1 0 -0.6 0 0.8" fovy="55"/>
+    <!-- Camera Gemini sees: front-top view of the workspace. NOTE: the
+         original xyaxes here had a sign error that pointed the camera up
+         and away from the table (forward vector (0.8,0,0.6) from this pos
+         points into the sky, not at the workspace) -- every prior rollout
+         video was, when actually inspected frame-by-frame, blank sky. Fixed
+         by negating the local x-axis, which flips the forward vector to
+         (-0.8,0,-0.6) (toward the table) while keeping the up vector
+         unchanged (no vertical flip). Verified by rendering and visually
+         inspecting a frame, not just checking it loads. -->
+    <camera name="vla_cam" pos="0.55 0.0 0.45" xyaxes="0 1 0 -0.6 0 0.8" fovy="55"/>
     <!-- Overhead debug camera -->
     <camera name="top_cam" pos="0.15 0 0.8" xyaxes="0 -1 0 1 0 0" fovy="50"/>
 
