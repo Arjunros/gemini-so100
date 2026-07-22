@@ -17,11 +17,18 @@ import imageio.v2 as imageio
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
-from geminibot.env import SO100ReachEnv
-from geminibot.gemini_vla import GeminiPlanner, ScriptedPlanner
+from geminibot.env import SO100ReachEnv, SO100PickPlaceEnv
+from geminibot.gemini_vla import GeminiPlanner, ScriptedPlanner, ScriptedPickPlacePlanner
+from geminibot.geometry import pixel_to_world
+
+# Approximate resting heights used only to back-project vision-grounded
+# pixel detections to 3D (see geometry.pixel_to_world's plane_z arg) --
+# not used for anything else, so a few mm of error here is harmless.
+BANANA_REST_Z = 0.01
+BOWL_REST_Z = 0.014
 
 
-def jacobian_ik_action(env: SO100ReachEnv) -> np.ndarray:
+def jacobian_ik_action(env) -> np.ndarray:
     """Fallback controller: damped-least-squares differential IK, target
     tethered to measured joint angles so the position servo can't run away."""
     import mujoco
@@ -40,7 +47,10 @@ def jacobian_ik_action(env: SO100ReachEnv) -> np.ndarray:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--task", default="pick up the red cube and lift it 10 cm")
+    ap.add_argument("--scene", choices=["cube", "pickplace"], default="cube",
+                    help="cube: fixed-cube reach/grasp/lift. "
+                         "pickplace: open-vocabulary banana-in-bowl (vision-grounded, no oracle object coords)")
+    ap.add_argument("--task", default=None, help="defaults per --scene if omitted")
     ap.add_argument("--model", default=None, help="path to SAC .zip checkpoint")
     ap.add_argument("--scripted", action="store_true", help="offline planner, no API")
     ap.add_argument("--plan-every", type=int, default=25, help="ctrl steps per planner call")
@@ -51,8 +61,16 @@ def main():
     ap.add_argument("--live", action="store_true", help="show live MuJoCo viewer")
     args = ap.parse_args()
 
-    env = SO100ReachEnv(max_episode_steps=args.max_steps, resample_goals=False)
-    planner = ScriptedPlanner() if args.scripted else GeminiPlanner()
+    pickplace = args.scene == "pickplace"
+    if args.task is None:
+        args.task = "put the banana in the bowl" if pickplace else "pick up the red cube and lift it 10 cm"
+
+    if pickplace:
+        env = SO100PickPlaceEnv(max_episode_steps=args.max_steps, resample_goals=False)
+        planner = ScriptedPickPlacePlanner() if args.scripted else GeminiPlanner()
+    else:
+        env = SO100ReachEnv(max_episode_steps=args.max_steps, resample_goals=False)
+        planner = ScriptedPlanner() if args.scripted else GeminiPlanner()
 
     policy = None
     if args.model:
@@ -68,6 +86,14 @@ def main():
 
     frames = []
     last_plan = 0.0
+    # Open-vocab pick-place only: cache vision-grounded positions between
+    # planning ticks rather than re-grounding every call (cheaper, and the
+    # objects don't move on their own) -- refreshed whenever the planner
+    # re-enters "hover" (a fresh pick attempt, e.g. after a failed grasp),
+    # since the object may have moved since the last grounding.
+    grounded_pick_xyz = grounded_place_xyz = None
+    last_phase = None
+    cam_id = env.model.camera("vla_cam").id if pickplace else None
 
     try:
         for t in range(args.max_steps):
@@ -78,10 +104,30 @@ def main():
                         time.sleep(args.plan_gap - gap)
                     last_plan = time.time()
                 frame = env.render("vla_cam")
-                sg = planner.plan(frame, args.task, info["gripper_pos"], info["cube_pos"])
-                print(f"[t={t:4d}] phase={sg.phase:10s} target={np.round(sg.target_xyz,3)} "
-                      f"grip={np.round(info['gripper_pos'],3)} cube={np.round(info['cube_pos'],3)} "
-                      f"jaw={sg.jaw:.1f}  {sg.reason}")
+
+                if pickplace:
+                    if args.scripted:
+                        sg = planner.plan(frame, args.task, info["gripper_pos"],
+                                          info["banana_pos"], info["bowl_pos"])
+                    else:
+                        if grounded_pick_xyz is None or last_phase == "hover":
+                            det = planner.locate_task_objects(frame, args.task)
+                            h, w = frame.shape[:2]
+                            grounded_pick_xyz = pixel_to_world(
+                                env.model, env.data, cam_id, *det["pick"], w, h, plane_z=BANANA_REST_Z)
+                            grounded_place_xyz = pixel_to_world(
+                                env.model, env.data, cam_id, *det["place"], w, h, plane_z=BOWL_REST_Z)
+                        sg = planner.plan_pickplace(frame, args.task, info["gripper_pos"],
+                                                    grounded_pick_xyz, grounded_place_xyz)
+                    last_phase = sg.phase
+                    print(f"[t={t:4d}] phase={sg.phase:12s} target={np.round(sg.target_xyz,3)} "
+                          f"grip={np.round(info['gripper_pos'],3)} jaw={sg.jaw:.1f}  {sg.reason}")
+                else:
+                    sg = planner.plan(frame, args.task, info["gripper_pos"], info["cube_pos"])
+                    print(f"[t={t:4d}] phase={sg.phase:10s} target={np.round(sg.target_xyz,3)} "
+                          f"grip={np.round(info['gripper_pos'],3)} cube={np.round(info['cube_pos'],3)} "
+                          f"jaw={sg.jaw:.1f}  {sg.reason}")
+
                 env.set_goal(sg.target_xyz, jaw=sg.jaw)
                 obs = env._obs()
                 if sg.done:
@@ -105,8 +151,11 @@ def main():
     finally:
         if frames:
             imageio.mimsave(args.video, frames, fps=25)
-            print(f"Cube height at end: {info['cube_pos'][2]:.3f} m "
-                  f"({'LIFTED!' if info['cube_pos'][2] > 0.08 else 'not lifted'})")
+            if pickplace:
+                print(f"Banana placed in bowl: {info['placed']}")
+            else:
+                print(f"Cube height at end: {info['cube_pos'][2]:.3f} m "
+                      f"({'LIFTED!' if info['cube_pos'][2] > 0.08 else 'not lifted'})")
             print(f"Video saved to {args.video} ({len(frames)} frames)")
         if viewer is not None:
             viewer.close()
