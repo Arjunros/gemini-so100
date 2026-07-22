@@ -133,13 +133,17 @@ class ScriptedPlanner:
 
     def plan(self, frame, instruction, gripper_xyz, cube_xyz) -> Subgoal:
         cx, cy, cz = cube_xyz
+        xy_err = float(np.linalg.norm(gripper_xyz[:2] - np.array([cx, cy])))
         if self.phase == "hover":
             sg = Subgoal([cx, cy, cz + 0.06], 1.0, "hover", False, "move above cube")
             if np.linalg.norm(gripper_xyz - np.array([cx, cy, cz + 0.06])) < 0.045:
                 self.phase = "descend"
         elif self.phase == "descend":
             sg = Subgoal([cx, cy, 0.015], 1.0, "descend", False, "lower to cube")
-            if gripper_xyz[2] < 0.045:
+            # require tight XY alignment (cube is 2.5cm wide) as well as depth
+            # before closing -- z-only was letting the jaw close 2-5cm off
+            # center, missing the cube entirely.
+            if gripper_xyz[2] < 0.045 and xy_err < 0.01:
                 self.phase = "grasp"
         elif self.phase == "grasp":
             sg = Subgoal([cx, cy, 0.015], 0.0, "grasp", False, "close jaw")

@@ -30,6 +30,16 @@ WORKSPACE_HIGH = np.array([0.32, 0.20, 0.25])
 CUBE_SPAWN_LOW = np.array([0.14, -0.15])
 CUBE_SPAWN_HIGH = np.array([0.28, 0.15])
 
+# Heights the VLA planner actually commands during a grasp sequence
+# (hover / descend-grasp / lift) -- used to bias training goal sampling
+# toward the region the policy needs to be precise in. NOTE: the physically
+# "correct" grasp height is 0.015 (cube centroid), but the deployed
+# checkpoint was curriculum-tuned against the workspace floor clipping it to
+# 0.02 -- lowering WORKSPACE_LOW to unclip this measurably hurt success
+# (untrained-for height) without a matching retrain. Keep the two in sync;
+# don't change one without the other.
+GRASP_HEIGHTS = np.array([0.02, 0.03, 0.075, 0.15])
+
 
 class SO100ReachEnv(gym.Env):
     """Goal-conditioned reach (and optionally grasp) with the SO-ARM100."""
@@ -91,6 +101,21 @@ class SO100ReachEnv(gym.Env):
             v = v / n * rmax
         return np.clip(center + v, WORKSPACE_LOW, WORKSPACE_HIGH)
 
+    def _sample_goal(self, cube_xy: np.ndarray) -> np.ndarray:
+        """Training-time curriculum: mostly sample goals near the cube at
+        grasp-relevant heights (hover/descend/grasp/lift -- exactly what the
+        deployed VLA loop asks for), with some uniform-workspace goals mixed
+        in for generalization. Uniform sampling alone left the policy
+        imprecise (~3.5cm off) at the low, cube-proximate targets that
+        actually matter for grasping."""
+        if self.np_random.random() < 0.7:
+            jitter = self.np_random.uniform(-0.01, 0.01, size=2)
+            z = self.np_random.choice(GRASP_HEIGHTS)
+            g = np.array([cube_xy[0] + jitter[0], cube_xy[1] + jitter[1], z])
+        else:
+            g = self.np_random.uniform(WORKSPACE_LOW, WORKSPACE_HIGH)
+        return self._clip_to_reach(g)
+
     # ------------------------------------------------------------------ core
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -109,9 +134,12 @@ class SO100ReachEnv(gym.Env):
         self.data.qpos[adr : adr + 3] = [xy[0], xy[1], 0.0125]
         self.data.qpos[adr + 3 : adr + 7] = [1, 0, 0, 0]
 
-        # Goal: either supplied by the caller (Gemini) or sampled in workspace
+        # Goal: either supplied by the caller (Gemini), curriculum-sampled
+        # near the cube during training, or uniform in the workspace (eval).
         if options and "goal" in options:
             self.goal = self._clip_to_reach(options["goal"])
+        elif self.resample_goals:  # proxy for "training mode"
+            self.goal = self._sample_goal(xy)
         else:
             self.goal = self._clip_to_reach(
                 self.np_random.uniform(WORKSPACE_LOW, WORKSPACE_HIGH))
@@ -157,8 +185,7 @@ class SO100ReachEnv(gym.Env):
         # goal switches (matches how the VLA planner moves the goal at
         # deployment) without ever coupling jaw state to its own actions
         if self.resample_goals and self._steps % 60 == 0:
-            self.goal = self._clip_to_reach(
-                self.np_random.uniform(WORKSPACE_LOW, WORKSPACE_HIGH))
+            self.goal = self._sample_goal(self.cube_pos()[:2])
             self.model.site_pos[self._site_goal] = self.goal
             self.jaw_cmd = float(self.np_random.integers(0, 2))
             self._apply_jaw()

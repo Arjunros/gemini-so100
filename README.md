@@ -106,6 +106,25 @@ view_env.py                interactive MuJoCo viewer
   position, not wrist orientation, so grasps succeed only sometimes. The
   trained policy (with the orientation shaping term) is meant to close that gap
   — and it's the interesting RL problem here.
+- **Grasp success rate is genuinely low (~10% in a 30-episode scripted-planner
+  eval), and it's not primarily a positioning problem.** Diagnosed by
+  measuring xy alignment error at the exact moment the planner closes the
+  jaw: the base checkpoint had a systematic ~3.5cm error at low, cube-
+  proximate targets (curriculum goal sampling toward exactly those targets,
+  see `_sample_goal` in `env.py`, fixed this to ~0.6cm). But fixing alignment
+  alone barely moved the success rate (5%→10%) — most well-aligned,
+  correct-height grasp attempts still don't hold the cube. That points to the
+  contact/orientation dynamics at the jaw-closing instant (only loosely
+  shaped by the 0.1-weight top-down-orientation reward term), not xy/z
+  position. A next step worth trying: an explicit orientation-at-contact
+  reward term, or approach-vector verification in the grasp phase itself.
+- Also found but *not* fixed (deliberately, to avoid retraining against a
+  moving target twice): `WORKSPACE_LOW`'s z-floor (0.02) silently clips the
+  intended 0.015 grasp height (the cube's centroid) upward by 0.5cm. The
+  current checkpoint was curriculum-tuned against the *clipped* height, so
+  removing the clip without a matching retrain measurably hurt success
+  (10%→3%). If you retrain, fix both together: lower `WORKSPACE_LOW[2]` to
+  ~0.01 and use 0.015 in `GRASP_HEIGHTS`.
 - Gemini calls cost ~1 image per second of sim time. Use `--scripted` while
   developing; switch to Gemini for the demos.
 - Coordinate convention (also stated in the Gemini system prompt): arm base at
