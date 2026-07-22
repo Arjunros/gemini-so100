@@ -1,0 +1,88 @@
+<mujoco model="so_arm100_pickplace">
+
+  <include file="so_arm100.xml"/>
+
+  <statistic center="0.15 0 0.1" extent="0.5"/>
+
+  <visual>
+    <headlight diffuse="0.7 0.7 0.7" ambient="0.4 0.4 0.4" specular="0.1 0.1 0.1"/>
+    <global azimuth="150" elevation="-25" offwidth="640" offheight="480"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.4 0.6 0.8" rgb2="0.9 0.9 0.95" width="256" height="256"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.85 0.85 0.85" rgb2="0.75 0.75 0.78"
+             width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="10 10" reflectance="0.05"/>
+
+    <!-- Objects: YCB banana + bowl (elpis-lab/ycb_dataset, MIT; underlying YCB
+         Object and Model Set, CC BY 4.0 -- see README credits). Real-world
+         scale (banana ~20cm, bowl ~16cm dia) is too large for this arm's
+         ~30cm reach and jaw sized for a 2.5cm cube, so both are scaled down. -->
+    <texture name="banana_tex" type="2d" file="assets/ycb/banana/texture_map.png"/>
+    <material name="banana_mat" texture="banana_tex"/>
+    <mesh name="banana_visual" file="ycb/banana/textured.obj" scale="0.45 0.45 0.45"/>
+    <mesh name="banana_coacd_0" file="ycb/banana/textured_coacd_0.stl" scale="0.45 0.45 0.45"/>
+    <mesh name="banana_coacd_1" file="ycb/banana/textured_coacd_1.stl" scale="0.45 0.45 0.45"/>
+    <mesh name="banana_coacd_2" file="ycb/banana/textured_coacd_2.stl" scale="0.45 0.45 0.45"/>
+    <mesh name="banana_coacd_3" file="ycb/banana/textured_coacd_3.stl" scale="0.45 0.45 0.45"/>
+
+    <texture name="bowl_tex" type="2d" file="assets/ycb/bowl/texture_map.png"/>
+    <material name="bowl_mat" texture="bowl_tex"/>
+    <mesh name="bowl_visual" file="ycb/bowl/textured.obj" scale="0.5 0.5 0.5"/>
+    <mesh name="bowl_coacd_0" file="ycb/bowl/textured_coacd_0.stl" scale="0.5 0.5 0.5"/>
+    <mesh name="bowl_coacd_1" file="ycb/bowl/textured_coacd_1.stl" scale="0.5 0.5 0.5"/>
+    <mesh name="bowl_coacd_2" file="ycb/bowl/textured_coacd_2.stl" scale="0.5 0.5 0.5"/>
+    <mesh name="bowl_coacd_3" file="ycb/bowl/textured_coacd_3.stl" scale="0.5 0.5 0.5"/>
+    <mesh name="bowl_coacd_4" file="ycb/bowl/textured_coacd_4.stl" scale="0.5 0.5 0.5"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0.3 0 1.2" dir="0 0 -1" directional="false"/>
+    <geom name="floor" type="plane" size="1.5 1.5 0.05" material="grid"/>
+
+    <!-- Camera Gemini sees: front-top view of the workspace. (See
+         scene_pick.xml for the story on why xyaxes is x-negated vs. what
+         you'd naively derive -- the original sign pointed at the sky.) -->
+    <camera name="vla_cam" pos="0.55 0.0 0.45" xyaxes="0 1 0 -0.6 0 0.8" fovy="55"/>
+    <!-- Overhead debug camera -->
+    <camera name="top_cam" pos="0.15 0 0.8" xyaxes="0 -1 0 1 0 0" fovy="50"/>
+
+    <!-- Pickable object. rest-z (0.0078) = -min_z of the scaled mesh, so it
+         spawns sitting on the floor rather than clipping through it. -->
+    <body name="banana" pos="0.20 -0.05 0.02">
+      <freejoint name="banana_free"/>
+      <geom type="mesh" mesh="banana_visual" material="banana_mat"
+            contype="0" conaffinity="0" density="0" group="2"/>
+      <geom type="mesh" mesh="banana_coacd_0" group="3" mass="0.02"
+            friction="1.2 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="banana_coacd_1" group="3" mass="0"
+            friction="1.2 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="banana_coacd_2" group="3" mass="0"
+            friction="1.2 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="banana_coacd_3" group="3" mass="0"
+            friction="1.2 0.05 0.001" condim="4"/>
+    </body>
+
+    <!-- Container. Heavier + higher friction so it isn't easily knocked
+         around while the arm is placing the banana. -->
+    <body name="bowl" pos="0.22 0.14 0.02">
+      <freejoint name="bowl_free"/>
+      <geom type="mesh" mesh="bowl_visual" material="bowl_mat"
+            contype="0" conaffinity="0" density="0" group="2"/>
+      <geom type="mesh" mesh="bowl_coacd_0" group="3" mass="0.08"
+            friction="1.0 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="bowl_coacd_1" group="3" mass="0"
+            friction="1.0 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="bowl_coacd_2" group="3" mass="0"
+            friction="1.0 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="bowl_coacd_3" group="3" mass="0"
+            friction="1.0 0.05 0.001" condim="4"/>
+      <geom type="mesh" mesh="bowl_coacd_4" group="3" mass="0"
+            friction="1.0 0.05 0.001" condim="4"/>
+    </body>
+
+    <!-- Debug marker for commanded targets (not used for success logic). -->
+    <site name="goal" pos="0.15 0.15 0.0125" size="0.015" rgba="0.1 0.8 0.2 0.35" type="sphere"/>
+  </worldbody>
+</mujoco>
