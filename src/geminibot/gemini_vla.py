@@ -65,6 +65,43 @@ class GeminiPlanner:
         self.model = model
         self.history: list[str] = []
 
+    def locate_objects(self, frame: np.ndarray, labels: list[str]) -> dict[str, tuple[float, float]]:
+        """Open-vocabulary grounding: ask Gemini to find named objects from
+        the image ALONE (no ground-truth coordinates given, unlike plan()'s
+        gripper_xyz/object_xyz args). Returns pixel-space box centers (u, v)
+        per label actually found; the caller converts to world xyz via
+        geometry.pixel_to_world using the real camera pose."""
+        from google.genai import types
+
+        buf = io.BytesIO()
+        Image.fromarray(frame).save(buf, format="JPEG", quality=90)
+        h, w = frame.shape[:2]
+
+        prompt = (
+            f"Locate each of these objects in the image: {', '.join(labels)}.\n"
+            "Respond with STRICT JSON, no markdown fences: a list of objects "
+            '{"label": "<name>", "box_2d": [ymin, xmin, ymax, xmax]}, with '
+            "box_2d coordinates normalized to a 0-1000 scale for this image "
+            "regardless of its actual resolution. Omit any object you cannot see."
+        )
+        resp = self.client.models.generate_content(
+            model=self.model,
+            contents=[types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1),
+        )
+        raw = resp.text.strip().removeprefix("```json").removesuffix("```").strip()
+        # Gemini occasionally appends trailing text after the JSON array;
+        # decode just the first valid JSON value and ignore the rest.
+        detections = json.JSONDecoder().raw_decode(raw)[0]
+
+        out: dict[str, tuple[float, float]] = {}
+        for d in detections:
+            ymin, xmin, ymax, xmax = d["box_2d"]
+            u = (xmin + xmax) / 2.0 / 1000.0 * w
+            v = (ymin + ymax) / 2.0 / 1000.0 * h
+            out[d["label"]] = (u, v)
+        return out
+
     def plan(self, frame: np.ndarray, instruction: str,
              gripper_xyz: np.ndarray, cube_xyz: np.ndarray) -> Subgoal:
         from google.genai import errors as genai_errors
