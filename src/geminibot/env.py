@@ -325,8 +325,14 @@ class SO100PickPlaceEnv(_SO100Base):
         if self.randomize_objects:
             b_xy = self.np_random.uniform(BANANA_SPAWN_LOW, BANANA_SPAWN_HIGH)
             bowl_xy = self.np_random.uniform(BOWL_SPAWN_LOW, BOWL_SPAWN_HIGH)
-            # keep them from overlapping at spawn
-            while np.linalg.norm(b_xy - bowl_xy) < 0.08:
+            # Keep them from overlapping at spawn. 0.08 was too tight: the
+            # banana's worst-case (rotated) horizontal half-extent is ~4.7cm
+            # and the bowl's radius is ~4cm, so anything under ~9cm risked
+            # mesh interpenetration -- which caused a genuine MuJoCo physics
+            # blowup (NaN/Inf QACC, logged to MUJOCO_LOG.TXT) during a SAC
+            # fine-tune, corrupting the replay buffer and triggering an
+            # entropy-coefficient runaway. 0.13 leaves real margin.
+            while np.linalg.norm(b_xy - bowl_xy) < 0.13:
                 bowl_xy = self.np_random.uniform(BOWL_SPAWN_LOW, BOWL_SPAWN_HIGH)
         else:
             b_xy = np.array([0.20, -0.08])
