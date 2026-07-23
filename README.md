@@ -6,6 +6,15 @@ the real, open-hardware robot arm from the LeRobot ecosystem — simulated in
 MuJoCo. Everything runs natively on Windows. No robot hardware required; the
 model is the same MJCF that hardware owners use, so policies and code transfer.
 
+Two tasks live here:
+- **`--scene cube`** (default): reach/grasp/lift a fixed red cube. Gemini is
+  handed oracle object coordinates each tick (it verifies against them, but
+  doesn't have to *find* the cube itself).
+- **`--scene pickplace`**: fully open-vocabulary pick-and-place — "put the
+  banana in the bowl." Gemini locates both objects from the camera image
+  **alone** (no coordinates given, no hardcoded object names), and a real
+  physical containment check (not a proximity heuristic) decides success.
+
 ```
                  every ~1 s                          every 40 ms
  camera frame ─► Gemini 2.5 ─► subgoal {target_xyz, jaw} ─► SAC policy ─► joint targets ─► MuJoCo
@@ -34,6 +43,10 @@ python train_sac.py --steps 300000
 # 4. The real thing
 $env:GOOGLE_API_KEY = "your-key"
 python run_vla.py --task "pick up the red cube and lift it" --model runs/best_model.zip
+
+# 5. Open-vocabulary pick-and-place: no coordinates or object names given to Gemini
+python run_vla.py --scene pickplace --scripted --model runs/best_model.zip --live   # offline mechanics check
+python run_vla.py --scene pickplace --model runs/best_model.zip                     # the real thing
 ```
 
 Each `run_vla.py` run saves a `rollout.mp4` of what happened.
@@ -42,12 +55,20 @@ Each `run_vla.py` run saves a `rollout.mp4` of what happened.
 
 ```
 assets/trs_so_arm100/      SO-ARM100 MJCF + meshes (Apache-2.0, from mujoco_menagerie)
-  scene_pick.xml           pick scene: arm + red cube + goal marker + cameras
-src/geminibot/env.py       Gymnasium env: goal-conditioned reach/grasp, 25 Hz control
-src/geminibot/gemini_vla.py  GeminiPlanner (image+state -> JSON subgoal) + ScriptedPlanner
-train_sac.py               SB3 SAC training with eval callback + TensorBoard
-run_vla.py                 the full slow/fast control loop, saves video
-view_env.py                interactive MuJoCo viewer
+  scene_pick.xml           cube scene: arm + red cube + goal marker + cameras
+  scene_pickplace.xml      pick-place scene: arm + YCB banana + bowl + cameras
+  assets/ycb/               banana/bowl meshes (see credits)
+src/geminibot/env.py       Gymnasium envs: SO100ReachEnv (cube) + SO100PickPlaceEnv (banana/bowl),
+                            sharing a _SO100Base with the reach policy's action/physics mechanics
+src/geminibot/geometry.py  pixel<->world camera projection, for vision grounding
+src/geminibot/gemini_vla.py  GeminiPlanner (cube: plan(); pick-place: locate_task_objects() +
+                            plan_pickplace()) + ScriptedPlanner / ScriptedPickPlacePlanner (oracle, offline)
+train_sac.py                SB3 SAC training with eval callback + TensorBoard
+finetune_grasp.py            fine-tunes an existing checkpoint (cube-grasp precision curriculum)
+finetune_pickplace.py        fine-tunes an existing checkpoint (banana/bowl curriculum) --
+                            has learned some scars, see "Gotchas" below before running it
+run_vla.py                   the full slow/fast control loop, saves video, --scene {cube,pickplace}
+view_env.py                  interactive MuJoCo viewer
 ```
 
 ## Environment details
@@ -63,6 +84,28 @@ view_env.py                interactive MuJoCo viewer
   − 0.001·‖a‖²; success radius 2.5 cm
 - Physics 500 Hz, control 25 Hz. The goal marker can be moved mid-episode via
   `env.set_goal(xyz, jaw=...)` — that's the hook the Gemini planner drives.
+
+### Pick-place scene (`SO100PickPlaceEnv`)
+
+Same action space, same 24-dim obs shape as the cube task (the object slot
+holds the banana's position) — the underlying reach skill is genuinely
+object-agnostic, so the *same* checkpoint drives both tasks without
+retraining the interface. What's new:
+
+- **Real objects, not primitives.** YCB banana (~0.45x scale, ~8.9cm long,
+  20g) and bowl (~0.5x scale, ~8cm dia, 80g) — real-world YCB scale (banana
+  ~20cm, bowl ~16cm dia) is too big for this arm's ~30cm reach and a jaw
+  sized for a 2.5cm cube.
+- **Real physical containment**, not a proximity heuristic: `is_placed()`
+  checks the banana is within the bowl's horizontal radius *and* within its
+  cavity height band, both derived from the actual scaled mesh dimensions.
+- **Fully open-vocabulary grounding**: `GeminiPlanner.locate_task_objects()`
+  identifies which object to pick and which is the destination from the
+  image + instruction alone — no coordinates, no hardcoded object names.
+  `geometry.pixel_to_world()` back-projects Gemini's bounding-box center to
+  3D via the camera's actual pose and a known table-height plane. Measured
+  accuracy: ~2.5mm (banana), ~6mm (bowl) against sim ground truth — not the
+  bottleneck in this pipeline.
 
 ## Gotchas we hit so you don't have to
 
@@ -89,6 +132,37 @@ view_env.py                interactive MuJoCo viewer
   phases complete without checking state; it would close the jaw in midair and
   report success. The system prompt now forces verification against
   gripper/cube coordinates and defines failure-retry behavior.
+- **Look at your rendered frames, not just the numbers.** `vla_cam`'s
+  `xyaxes` had a sign error that pointed the camera up and away from the
+  workspace — its forward vector was `(0.8, 0, 0.6)` from `(0.55, 0, 0.45)`,
+  i.e. into the sky. Every rollout video for most of this project's
+  development was, when actually opened frame-by-frame, blank sky — this
+  went unnoticed because verification relied entirely on numeric telemetry
+  (gripper/object distance), never on looking at an actual frame. The
+  physics and control logic were fine throughout; only the camera (and
+  therefore what Gemini actually saw) was broken. Fixed by negating the
+  local x-axis. Lesson: numeric telemetry can't catch a bug that's purely
+  visual — this one would have silently broken vision grounding entirely.
+- **SAC fine-tuning can diverge quietly, and physics bugs can cause it.** A
+  fine-tune for the pick-place curriculum blew up (`ent_coef` ran from
+  ~0.03 to 30+, actor/critic losses exploded) and produced a checkpoint
+  *worse* than doing nothing. `MUJOCO_LOG.TXT` (easy to miss — it appears
+  wherever the process's cwd is, not in a log directory) showed the actual
+  cause: NaN/Inf accelerations from banana/bowl spawning close enough to
+  interpenetrate (the separation check only compared center-to-center
+  distance against a fixed 8cm threshold, not the objects' actual extents
+  — banana's worst-case horizontal half-extent is ~4.7cm, bowl's radius
+  ~4cm). One bad contact resolution corrupted the replay buffer and the
+  entropy auto-tuner never recovered. Fixed the spawn separation (0.13m)
+  and added a training-time safeguard (`finetune_pickplace.py`'s
+  `StopOnEntropyRunaway`) that aborts if `ent_coef` exceeds 1.0, rather
+  than silently burning the full step budget on a diverged policy.
+- **`model.learning_rate = x` doesn't change SB3's effective learning
+  rate.** `BaseAlgorithm._update_learning_rate` resets every optimizer's LR
+  from `model.lr_schedule` before each `train()` call — you have to replace
+  `lr_schedule` itself (`from stable_baselines3.common.utils import
+  get_schedule_fn; model.lr_schedule = get_schedule_fn(new_lr)`), or your
+  override gets silently overwritten on the first gradient step.
 - **Don't let the planner's jaw command fight a jointly-trained policy.** The
   original design trained SAC over all 6 actuators (arm + jaw) and then, at
   deployment, force-zeroed the jaw action so the planner's `set_goal(jaw=...)`
@@ -130,15 +204,58 @@ view_env.py                interactive MuJoCo viewer
 - Coordinate convention (also stated in the Gemini system prompt): arm base at
   origin, +x toward the camera, +y left, +z up, metres.
 
+### Pick-place task: honest results
+
+Full end-to-end placement success (banana genuinely resting in the bowl,
+`ScriptedPickPlacePlanner` + trained policy, 20-episode eval): **0/20**.
+This is a harder, *compound* version of the cube's already-imperfect grasp
+problem — it needs a successful grasp (banana is a harder shape to grasp
+reliably than a cube) **and** a precise, separate placement afterward.
+Multiplying two already-marginal probabilities together plausibly lands
+well under 5% true success; 0/20 isn't strong evidence of "broken" so much
+as "hard, and not measurably fixed yet." What was tried:
+
+- Zero-shot transfer of the cube-tuned checkpoint reached banana-height
+  targets fine (1.6cm) but was ~11-12cm off on bowl-proximate targets
+  (that xy region + the two-object curriculum weren't in the original
+  training distribution).
+- A curriculum-extended fine-tune (targets biased toward both the banana
+  and bowl regions, see `_primary_object_xy` in `env.py`) genuinely
+  improved aggregate reach metrics (success rate 0%→40% peak, reward from
+  deeply negative to +136) but didn't move the specific bowl-precision
+  probe or the full-task success rate in a 20-episode sample — the
+  improvement, whatever it was, didn't concentrate where this eval looks.
+- **The planner's own success claim isn't verifiable the way the cube
+  task's is.** In a live run, Gemini declared `done=true` ("the banana has
+  been successfully placed") when the ground-truth containment check said
+  otherwise. The cube task's planner verifies against a continuously
+  fed oracle z-coordinate each tick; the pick-place planner only has
+  vision-grounded positions from whenever it last looked, so "did this
+  actually work" ultimately falls back to visual judgment, which turned
+  out to be overconfident here. A fix worth trying: re-run
+  `locate_task_objects` after release and have the planner compare the
+  banana's new grounded position against the bowl's, instead of trusting
+  its own narrative.
+- Not yet tried: an explicit reward term for "object stays near the
+  gripper once grasped" / "object is near the bowl once released" — the
+  current reward only shapes gripper-to-goal distance and has zero
+  awareness of whether anything is actually being carried.
+
 ## Roadmap to v0.1 (open source)
 
 1. Trained SAC checkpoint + training curves committed to the repo
 2. Success-rate benchmark: scripted vs Gemini planner, 50 episodes each
-3. Second task (place cube on target) + task registry
-4. Domain randomization toggles (cube size/mass/friction, camera jitter)
+3. Grasp-contact reward shaping (cube and pick-place both stall on physical
+   grasp/hold reliability, not just reach precision)
+4. Domain randomization toggles (object size/mass/friction, camera jitter)
 5. LeRobot-format dataset export of successful rollouts (for imitation learning)
 
 ## License / credits
 
 Arm model: [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie)
 (`trs_so_arm100`, Apache-2.0), based on TheRobotStudio's SO-ARM100.
+
+Banana/bowl meshes: [elpis-lab/ycb_dataset](https://github.com/elpis-lab/ycb_dataset)
+(MIT), a MuJoCo/PyBullet-ready packaging of the
+[YCB Object and Model Set](https://www.ycbbenchmarks.com/) (Calli et al.,
+CC BY 4.0).

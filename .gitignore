@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 runs/old_6dim_broken/
 runs/pretune_backup/
+runs_pickplace/
+runs_pickplace_log.txt
