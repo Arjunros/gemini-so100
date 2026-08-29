@@ -174,6 +174,7 @@ class _SO100Base(gym.Env):
         reward += 2.0 if success else 0.0    # sparse bonus
         # top-down orientation shaping: approach axis should point at -z
         reward += 0.1 * float(self.approach_vec() @ np.array([0.0, 0.0, -1.0]))
+        reward += self._extra_reward()
         reward -= 0.001 * float(np.square(action).sum())
         # discourage freezing while far from goal (kills parking-spot attractor)
         if dist > 0.05 and float(np.abs(self.data.qvel[:5]).sum()) < 0.05:
@@ -195,6 +196,10 @@ class _SO100Base(gym.Env):
         v = self.gripper_pos() - self.data.xpos[self._body_jaw]
         n = np.linalg.norm(v)
         return v / n if n > 1e-9 else np.array([0.0, 0.0, -1.0])
+
+    def _extra_reward(self) -> float:
+        """Hook for scene-specific shaping terms (see SO100PickPlaceEnv)."""
+        return 0.0
 
     def _obs(self) -> np.ndarray:
         raise NotImplementedError
@@ -304,7 +309,28 @@ class SO100PickPlaceEnv(_SO100Base):
         super().__init__(**kwargs)
         self._banana_qpos_adr = self.model.joint("banana_free").qposadr[0]
         self._bowl_qpos_adr = self.model.joint("bowl_free").qposadr[0]
+        self._body_moving_jaw = self.model.body("Moving_Jaw").id
         self.randomize_objects = randomize_objects
+
+    def _pinch_alignment(self) -> float:
+        """|pinch_axis . banana_long_axis|: 0 = jaw perpendicular to the
+        banana (gripping across its ~3cm width, good), 1 = jaw parallel to
+        it (trying to span its ~9cm length, physically can't close on it).
+        Diagnosed empirically as the dominant factor in grasp success --
+        with oracle-precision IK positioning, natural (unshaped) wrist
+        orientation gave ~0.48 alignment and 0/10 successful holds; forcing
+        ~0.12 alignment gave 4/5. See README."""
+        pinch = self.data.xpos[self._body_moving_jaw] - self.data.xpos[self._body_jaw]
+        n = np.linalg.norm(pinch)
+        pinch_dir = pinch / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+        quat = self.data.qpos[self._banana_qpos_adr + 3 : self._banana_qpos_adr + 7]
+        mat = np.zeros(9)
+        mujoco.mju_quat2Mat(mat, quat)
+        long_axis = mat.reshape(3, 3) @ np.array([0.0, 1.0, 0.0])
+        return abs(float(np.dot(pinch_dir, long_axis)))
+
+    def _extra_reward(self) -> float:
+        return 0.2 * (1.0 - self._pinch_alignment())
 
     def _primary_object_xy(self) -> np.ndarray:
         # Curriculum covers both sub-tasks: reaching near the banana (pick)
