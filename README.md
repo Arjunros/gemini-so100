@@ -236,6 +236,31 @@ as "hard, and not measurably fixed yet." What was tried:
   `locate_task_objects` after release and have the planner compare the
   banana's new grounded position against the bowl's, instead of trusting
   its own narrative.
+- **Found the dominant cause of grasp failure, and it isn't positioning at
+  all: wrist orientation.** With oracle-precision IK positioning (sub-cm
+  xy, correct height, no policy involved), grasping the banana still
+  failed 0/10 — the gripper's natural approach orientation pinches
+  partway across the banana's ~8.9cm long axis instead of its ~3.1cm
+  width, physically too wide to close on regardless of position. Measured
+  via `|pinch_axis · banana_long_axis|` (0 = perpendicular/graspable, 1 =
+  parallel/impossible): natural IK convergence gives ~0.48 and 0/5 held;
+  forcing ~0.12 via an explicit wrist-roll offset gives 4/5 held. This is
+  the most concrete, verified lead in this whole investigation — a much
+  bigger lever than any position-precision tuning tried so far, because it
+  targets the actual physical cause rather than a proxy for it.
+- Added `_extra_reward()`/`_pinch_alignment()` in `env.py` (a hook on the
+  shared base class, default 0.0 so the symmetric cube task is unaffected)
+  rewarding low pinch/banana-axis alignment, and fine-tuned against it. The
+  policy's alignment during real grasp attempts improved only modestly
+  (0.257→0.233 mean, need ~0.12) over 150k steps at a conservative learning
+  rate — real progress, same direction as the diagnostic, but nowhere near
+  enough to show up in full-task success yet. Likely needs a stronger
+  reward weight (currently 0.2, comparable to the existing top-down term)
+  and/or a longer run: SAC has to *discover* the coordinated wrist behavior
+  through exploration, which is a much harder search than IK explicitly
+  targeting one known-good angle. Whoever picks this up next: start here,
+  it's diagnosed and the fix direction is verified correct, just not fully
+  realized yet.
 - Not yet tried: an explicit reward term for "object stays near the
   gripper once grasped" / "object is near the bowl once released" — the
   current reward only shapes gripper-to-goal distance and has zero
